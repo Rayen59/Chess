@@ -125,7 +125,7 @@ export function useChessGame() {
 
   // Carte thermique tactique (uniquement hors-ligne)
   const [showTacticalHeatmap, setShowTacticalHeatmap] = useState<boolean>(false);
-  const [autoCoachEnabled, setAutoCoachEnabled] = useState<boolean>(true);
+  const [autoCoachEnabled, setAutoCoachEnabled] = useState<boolean>(false);
   const autoCoachRef = useRef(autoCoachEnabled);
   autoCoachRef.current = autoCoachEnabled;
 

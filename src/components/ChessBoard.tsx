@@ -257,7 +257,7 @@ export const ChessBoard: React.FC<ChessBoardProps> = ({
     for (const move of legalTargets) {
       styles[move.to] = {
         ...styles[move.to],
-        background: move.captured
+        backgroundImage: move.captured
           ? 'radial-gradient(circle, transparent 52%, rgba(239, 68, 68, 0.82) 58%)'
           : 'radial-gradient(circle, rgba(22, 101, 52, 0.65) 24%, transparent 28%)',
       };

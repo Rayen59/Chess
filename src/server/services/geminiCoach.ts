@@ -1,5 +1,6 @@
 // src/server/services/geminiCoach.ts
 // Service Serveur d'Analyse et Commentaires Grand Maître avec Gemini API (@google/genai)
+// Inclut un cache LRU, un régulateur de quota (anti-429 Free Tier) et un moteur analytique Grand Maître de secours
 import { GoogleGenAI, Type } from '@google/genai';
 import { Chess } from 'chess.js';
 import { analyzeCompletedGame, computeMultiPvMoves, detectOpeningEco } from './stockfish.ts';
@@ -33,6 +34,36 @@ export interface AiFullGameReview {
   improvementAdvice: string[];
 }
 
+// Cache mémoire et protection contre le dépassement de quota (429 RESOURCE_EXHAUSTED - 5 req/min Free Tier)
+const commentaryCache = new Map<string, AiMoveCommentary>();
+const reviewCache = new Map<string, AiFullGameReview>();
+const MAX_CACHE_ENTRIES = 150;
+
+let geminiCooldownUntil = 0;
+let lastGeminiCallTimestamp = 0;
+const MIN_GEMINI_INTERVAL_MS = 14_000; // Max ~4 appels/min pour ne jamais saturer le quota de 5/min
+
+function canInvokeGeminiApi(): boolean {
+  if (!process.env.GEMINI_API_KEY) return false;
+  const now = Date.now();
+  if (now < geminiCooldownUntil) return false;
+  if (now - lastGeminiCallTimestamp < MIN_GEMINI_INTERVAL_MS) return false;
+  return true;
+}
+
+function handleGeminiQuotaError(err: unknown): void {
+  const now = Date.now();
+  const msg = err instanceof Error ? err.message : String(err);
+  // Extraire le délai retryDelay éventuel (ex: "retry in 52.7s" ou "52s")
+  const match = msg.match(/retry in ([0-9.]+)s/i) || msg.match(/"retryDelay"\s*:\s*"([0-9.]+)s"/i);
+  const waitSeconds = match ? Math.ceil(Number(match[1])) + 3 : 60;
+  if (msg.includes('429') || msg.includes('RESOURCE_EXHAUSTED') || msg.includes('quota')) {
+    geminiCooldownUntil = now + waitSeconds * 1000;
+  } else {
+    geminiCooldownUntil = now + 15_000;
+  }
+}
+
 export async function generateMoveCommentary(params: {
   fen: string;
   pgn: string;
@@ -41,15 +72,24 @@ export async function generateMoveCommentary(params: {
   evaluationCp: number;
 }): Promise<AiMoveCommentary> {
   const { fen, pgn, lastMoveSan, playerColor, evaluationCp } = params;
+  const cacheKey = `${fen}|${lastMoveSan || ''}|${playerColor}`;
+  const cached = commentaryCache.get(cacheKey);
+  if (cached) {
+    return cached;
+  }
+
   const opening = detectOpeningEco(pgn, fen);
   const multiPv = computeMultiPvMoves(fen, 2000, 3);
-  const bestLine = multiPv.topMoves.map((m) => `${m.san} (${m.evalCp >= 0 ? '+' : ''}${(m.evalCp / 100).toFixed(1)})`);
+  const bestLine = multiPv.topMoves.map(
+    (m) => `${m.san} (${m.evalCp >= 0 ? '+' : ''}${(m.evalCp / 100).toFixed(1)})`
+  );
 
   const evalPawns = (evaluationCp / 100).toFixed(2);
   const chess = new Chess(fen);
   const turnText = chess.turn() === 'w' ? 'Blancs' : 'Noirs';
 
-  if (process.env.GEMINI_API_KEY) {
+  if (canInvokeGeminiApi()) {
+    lastGeminiCallTimestamp = Date.now();
     try {
       const prompt = `Tu es un Grand Maître international d'échecs et entraîneur FIDE francophone.
 Analyse la position d'échecs suivante de manière pédagogique, concise et très précise :
@@ -107,7 +147,7 @@ Fournis ton analyse structurée en français.`;
       const rawText = response.text;
       if (rawText) {
         const parsed = JSON.parse(rawText.trim());
-        return {
+        const result: AiMoveCommentary = {
           headline: parsed.headline || `Analyse : ${opening.name}`,
           moveQuality: parsed.moveQuality || 'Coup analysé par le Coach IA',
           positionalExplanation: parsed.positionalExplanation,
@@ -116,14 +156,21 @@ Fournis ton analyse structurée en français.`;
           bestEngineLine: bestLine,
           openingName: `${opening.eco} · ${opening.name}`,
         };
+        if (commentaryCache.size >= MAX_CACHE_ENTRIES) {
+          const firstKey = commentaryCache.keys().next().value;
+          if (firstKey) commentaryCache.delete(firstKey);
+        }
+        commentaryCache.set(cacheKey, result);
+        return result;
       }
     } catch (err) {
-      console.warn('Gemini move commentary fallback:', err);
+      handleGeminiQuotaError(err);
     }
   }
 
-  // Fallback analytique déterministe basé sur le moteur tactique local
+  // Fallback analytique déterministe basé sur le moteur tactique local (sans erreur console)
   const bestCandidate = multiPv.topMoves[0];
+  const secondCandidate = multiPv.topMoves[1];
   const threatMove = multiPv.threatMove;
   const absEval = Math.abs(evaluationCp);
   const advantageSide =
@@ -133,7 +180,7 @@ Fournis ton analyse structurée en français.`;
         ? 'Avantage aux Blancs'
         : 'Avantage aux Noirs';
 
-  return {
+  const fallbackResult: AiMoveCommentary = {
     headline: lastMoveSan
       ? `Après ${lastMoveSan} — ${advantageSide} (${Number(evalPawns) >= 0 ? '+' : ''}${evalPawns})`
       : `${opening.eco} · ${opening.name}`,
@@ -143,18 +190,23 @@ Fournis ton analyse structurée en français.`;
         : absEval < 180
           ? 'Pression positionnelle croissante'
           : 'Avantage décisif détecté',
-    positionalExplanation: `Dans cette structure issue de ${opening.name}, le trait est aux ${turnText}. La coordination des pièces centrales et la sécurité du Roi déterminent la suite du combat.`,
+    positionalExplanation: `Dans cette structure issue de ${opening.name} (${opening.eco}), le trait est aux ${turnText}. La coordination des pièces centrales et la sécurité du Roi déterminent la suite du combat.`,
     tacticalAlert: threatMove
       ? `Attention à la menace adverse potentielle ${threatMove.san} (${threatMove.from}→${threatMove.to}).`
       : chess.inCheck()
         ? 'Le Roi est actuellement en échec : vous devez parer la menace immédiatement.'
         : 'Aucune menace immédiate forcée, surveillez les pièces non défendues.',
     recommendedPlan: bestCandidate
-      ? `Le moteur recommande ${bestCandidate.san} (${bestCandidate.from}→${bestCandidate.to}) pour optimiser l’activité de vos pièces.`
+      ? `Le moteur recommande ${bestCandidate.san} (${bestCandidate.from}→${bestCandidate.to})${
+          secondCandidate ? `, ou l'alternative ${secondCandidate.san}` : ''
+        } pour optimiser l’activité de vos pièces.`
       : 'Consolidez votre roque et contestez les colonnes centrales.',
     bestEngineLine: bestLine,
     openingName: `${opening.eco} · ${opening.name}`,
   };
+
+  commentaryCache.set(cacheKey, fallbackResult);
+  return fallbackResult;
 }
 
 export async function generateFullGameReview(params: {
@@ -164,6 +216,12 @@ export async function generateFullGameReview(params: {
   reason: string;
 }): Promise<AiFullGameReview> {
   const { pgn, playerColor, result, reason } = params;
+  const reviewKey = `${pgn.trim()}|${playerColor}|${result}`;
+  const cached = reviewCache.get(reviewKey);
+  if (cached) {
+    return cached;
+  }
+
   const engineAnalysis = analyzeCompletedGame(pgn);
   const opening = detectOpeningEco(pgn);
 
@@ -180,7 +238,8 @@ export async function generateFullGameReview(params: {
     prevCp = m.evalCp;
   }
 
-  if (process.env.GEMINI_API_KEY && pgn.trim().length > 0) {
+  if (canInvokeGeminiApi() && pgn.trim().length > 0) {
+    lastGeminiCallTimestamp = Date.now();
     try {
       const prompt = `Tu es un Grand Maître d'échecs FIDE. Rédige un bilan d'analyse post-partie complet en français pour cette partie :
 - PGN : ${pgn}
@@ -246,14 +305,20 @@ export async function generateFullGameReview(params: {
 
       const rawText = response.text;
       if (rawText) {
-        return JSON.parse(rawText.trim()) as AiFullGameReview;
+        const parsedReview = JSON.parse(rawText.trim()) as AiFullGameReview;
+        if (reviewCache.size >= MAX_CACHE_ENTRIES) {
+          const firstKey = reviewCache.keys().next().value;
+          if (firstKey) reviewCache.delete(firstKey);
+        }
+        reviewCache.set(reviewKey, parsedReview);
+        return parsedReview;
       }
     } catch (err) {
-      console.warn('Gemini full review fallback:', err);
+      handleGeminiQuotaError(err);
     }
   }
 
-  return {
+  const fallbackReview: AiFullGameReview = {
     summaryTitle: `Bilan Grand Maître — ${opening.name}`,
     executiveSummary: `Partie disputée sur ${engineAnalysis.moves.length} demi-coups (${result} par ${reason}). Les Blancs ont affiché une précision de ${engineAnalysis.whiteAccuracy}% contre ${engineAnalysis.blackAccuracy}% pour les Noirs.`,
     openingAssessment: `Ouverture identifiée : ${opening.eco} (${opening.name}). Le développement initial a posé les bases de la lutte pour le centre.`,
@@ -268,8 +333,11 @@ export async function generateFullGameReview(params: {
     ],
     improvementAdvice: [
       'Vérifiez systématiquement les échecs, captures et menaces adverses avant chaque coup.',
-      'Rejouez le moment clé sur l’échiquier avec les flèches Multi-PV activées.',
+      'Rejouez le moment clé sur l’échiquier en inspectant les lignes Multi-PV.',
       'Travaillez la transition entre l’ouverture et le milieu de jeu pour éviter les pièces non coordonnées.',
     ],
   };
+
+  reviewCache.set(reviewKey, fallbackReview);
+  return fallbackReview;
 }
