@@ -1,0 +1,6 @@
+{
+  "name": "ChessMaster Pro",
+  "description": "Plateforme complète d'échecs en ligne temps réel avec classement ELO FIDE, IA Stockfish, tournois Arena/Suisse, puzzles tactiques et salles multijoueur.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

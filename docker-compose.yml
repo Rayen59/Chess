@@ -1,0 +1,45 @@
+# docker-compose.yml — Déploiement Conteneurisé ChessMaster Pro (PostgreSQL + Redis + App + Nginx)
+version: '3.9'
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: chessmaster-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${SQL_USER:-chessmaster}
+      POSTGRES_PASSWORD: ${SQL_PASSWORD:-chessmaster_secret}
+      POSTGRES_DB: ${SQL_DB_NAME:-chessmaster_pro}
+    ports:
+      - '5432:5432'
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  redis:
+    image: redis:7-alpine
+    container_name: chessmaster-redis
+    restart: unless-stopped
+    ports:
+      - '6379:6379'
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: chessmaster-app
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      SQL_HOST: postgres
+      SQL_DB_NAME: ${SQL_DB_NAME:-chessmaster_pro}
+      SQL_USER: ${SQL_USER:-chessmaster}
+      SQL_PASSWORD: ${SQL_PASSWORD:-chessmaster_secret}
+      JWT_SECRET: ${JWT_SECRET:-chessmaster-pro-super-secret-jwt-key-2026}
+    ports:
+      - '3000:3000'
+    depends_on:
+      - postgres
+      - redis
+
+volumes:
+  pgdata:

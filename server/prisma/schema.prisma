@@ -1,0 +1,192 @@
+// server/prisma/schema.prisma
+// Schéma Prisma de référence correspondant exactement aux tables PostgreSQL de ChessMaster Pro
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id               Int          @id @default(autoincrement())
+  uid              String       @unique
+  email            String       @unique
+  username         String       @unique
+  passwordHash     String?      @map("password_hash")
+  countryCode      String       @default("FR") @map("country_code")
+  countryName      String       @default("France") @map("country_name")
+  avatarUrl        String?      @default("") @map("avatar_url")
+  bio              String       @default("Passionné d’échecs sur ChessMaster Pro.")
+  estimatedLevel   String       @default("Intermédiaire (1200)") @map("estimated_level")
+  emailVerified    Boolean      @default(false) @map("email_verified")
+  verificationCode String?      @map("verification_code")
+  eloBullet        Int          @default(1200) @map("elo_bullet")
+  eloBlitz         Int          @default(1200) @map("elo_blitz")
+  eloRapid         Int          @default(1200) @map("elo_rapid")
+  eloClassical     Int          @default(1200) @map("elo_classical")
+  gamesPlayed      Int          @default(0) @map("games_played")
+  wins             Int          @default(0)
+  losses           Int          @default(0)
+  draws            Int          @default(0)
+  puzzleRating     Int          @default(1200) @map("puzzle_rating")
+  puzzlesSolved    Int          @default(0) @map("puzzles_solved")
+  puzzleStreak     Int          @default(0) @map("puzzle_streak")
+  role             String       @default("USER")
+  isBanned         Boolean      @default(false) @map("is_banned")
+  isMuted          Boolean      @default(false) @map("is_muted")
+  createdAt        DateTime     @default(now()) @map("created_at")
+  eloHistory       EloHistory[]
+
+  @@map("users")
+}
+
+model EloHistory {
+  id         Int      @id @default(autoincrement())
+  userId     Int      @map("user_id")
+  userUid    String   @map("user_uid")
+  category   String
+  elo        Int
+  delta      Int      @default(0)
+  recordedAt DateTime @default(now()) @map("recorded_at")
+  user       User     @relation(fields: [userId], references: [id])
+
+  @@map("elo_history")
+}
+
+model Room {
+  id            Int      @id @default(autoincrement())
+  code          String   @unique
+  name          String
+  hostUid       String   @map("host_uid")
+  hostUsername  String   @map("host_username")
+  hostCountry   String   @default("FR") @map("host_country")
+  hostElo       Int      @default(1200) @map("host_elo")
+  guestUid      String?  @map("guest_uid")
+  guestUsername String?  @map("guest_username")
+  guestCountry  String?  @map("guest_country")
+  guestElo      Int?     @map("guest_elo")
+  timeControl   String   @default("10+0") @map("time_control")
+  category      String   @default("rapid")
+  isPrivate     Boolean  @default(false) @map("is_private")
+  passwordHash  String?  @map("password_hash")
+  status        String   @default("WAITING")
+  fen           String   @default("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1")
+  pgn           String   @default("")
+  whiteTimeMs   Int      @default(600000) @map("white_time_ms")
+  blackTimeMs   Int      @default(600000) @map("black_time_ms")
+  incrementMs   Int      @default(0) @map("increment_ms")
+  createdAt     DateTime @default(now()) @map("created_at")
+
+  @@map("rooms")
+}
+
+model Game {
+  id               Int      @id @default(autoincrement())
+  roomCode         String?  @map("room_code")
+  whiteUid         String   @map("white_uid")
+  blackUid         String   @map("black_uid")
+  whiteUsername    String   @map("white_username")
+  blackUsername    String   @map("black_username")
+  whiteCountry     String   @default("FR") @map("white_country")
+  blackCountry     String   @default("FR") @map("black_country")
+  whiteEloBefore   Int      @default(1200) @map("white_elo_before")
+  blackEloBefore   Int      @default(1200) @map("black_elo_before")
+  whiteEloAfter    Int      @default(1200) @map("white_elo_after")
+  blackEloAfter    Int      @default(1200) @map("black_elo_after")
+  category         String   @default("rapid")
+  timeControl      String   @default("10+0") @map("time_control")
+  result           String   @default("*")
+  reason           String   @default("in_progress")
+  pgn              String   @default("")
+  finalFen         String   @map("final_fen")
+  movesCount       Int      @default(0) @map("moves_count")
+  whiteAccuracy    Int?     @default(88) @map("white_accuracy")
+  blackAccuracy    Int?     @default(85) @map("black_accuracy")
+  suspiciousFlag   Boolean  @default(false) @map("suspicious_flag")
+  suspiciousReason String?  @map("suspicious_reason")
+  createdAt        DateTime @default(now()) @map("created_at")
+  moves            Move[]
+
+  @@map("games")
+}
+
+model Move {
+  id             Int      @id @default(autoincrement())
+  gameId         Int      @map("game_id")
+  moveNumber     Int      @map("move_number")
+  color          String
+  san            String
+  fromSquare     String   @map("from_square")
+  toSquare       String   @map("to_square")
+  fenAfter       String   @map("fen_after")
+  timeSpentMs    Int      @default(0) @map("time_spent_ms")
+  evaluationCp   Int?     @default(0) @map("evaluation_cp")
+  classification String?  @default("good")
+  createdAt      DateTime @default(now()) @map("created_at")
+  game           Game     @relation(fields: [gameId], references: [id])
+
+  @@map("moves")
+}
+
+model Friend {
+  id                Int      @id @default(autoincrement())
+  requesterUid      String   @map("requester_uid")
+  requesterUsername String   @map("requester_username")
+  requesterCountry  String   @default("FR") @map("requester_country")
+  addresseeUid      String   @map("addressee_uid")
+  addresseeUsername String   @map("addressee_username")
+  addresseeCountry  String   @default("FR") @map("addressee_country")
+  status            String   @default("PENDING")
+  createdAt         DateTime @default(now()) @map("created_at")
+
+  @@map("friends")
+}
+
+model Tournament {
+  id               Int      @id @default(autoincrement())
+  name             String
+  format           String   @default("ARENA")
+  category         String   @default("blitz")
+  timeControl      String   @default("3+2") @map("time_control")
+  minElo           Int      @default(800) @map("min_elo")
+  maxElo           Int      @default(2800) @map("max_elo")
+  maxPlayers       Int      @default(16) @map("max_players")
+  status           String   @default("ACTIVE")
+  creatorUid       String   @map("creator_uid")
+  creatorUsername  String   @map("creator_username")
+  participantsJson String   @default("[]") @map("participants_json")
+  pairingsJson     String   @default("[]") @map("pairings_json")
+  startsAt         DateTime @default(now()) @map("starts_at")
+  createdAt        DateTime @default(now()) @map("created_at")
+
+  @@map("tournaments")
+}
+
+model Puzzle {
+  id            Int      @id @default(autoincrement())
+  title         String
+  fen           String
+  solutionMoves String   @map("solution_moves")
+  theme         String
+  difficultyElo Int      @default(1400) @map("difficulty_elo")
+  isDaily       Boolean  @default(false) @map("is_daily")
+  createdAt     DateTime @default(now()) @map("created_at")
+
+  @@map("puzzles")
+}
+
+model Notification {
+  id        Int      @id @default(autoincrement())
+  userUid   String   @map("user_uid")
+  type      String
+  title     String
+  body      String
+  link      String?
+  isRead    Boolean  @default(false) @map("is_read")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@map("notifications")
+}
